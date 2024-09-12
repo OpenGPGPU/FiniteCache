@@ -52,21 +52,20 @@ int ogpu_chardev_init(void)
 	return 0;
 
 err_device_create:
-        class_unregister(&compute_class);
+    class_unregister(&compute_class);
 err_class_create:
-        unregister_chrdev(compute_char_dev_major, compute_dev_name);
+    unregister_chrdev(compute_char_dev_major, compute_dev_name);
 err_register_chrdev:
-        return err;
-
+    return err;
 }
 
 
 void ogpu_chardev_exit(void)
 {
-        device_destroy(&compute_class, MKDEV(compute_char_dev_major, 0));
-        class_unregister(&compute_class);
-        unregister_chrdev(compute_char_dev_major, compute_dev_name);
-        compute_device = NULL;
+    device_destroy(&compute_class, MKDEV(compute_char_dev_major, 0));
+    class_unregister(&compute_class);
+    unregister_chrdev(compute_char_dev_major, compute_dev_name);
+    compute_device = NULL;
 }
 
 
@@ -80,24 +79,24 @@ static int compute_open(struct inode *inode, struct file *filep)
 	is_32bit_user_mode = in_compat_syscall();
 
 	if (is_32bit_user_mode) {
-		dev_warn(compute_device,
-                        "Process %d (32-bit) failed to open /dev/ogpu\n"
-                        "32-bit processes are not supported by ogpu driver\n",
-                        current->pid);
-                return -EPERM;
+        dev_warn(compute_device,
+                 "Process %d (32-bit) failed to open /dev/ogpu\n"
+                 "32-bit processes are not supported by ogpu driver\n",
+                 current->pid);
+        return -EPERM;
 	}
 
 	process = compute_create_process(current);
-	  if (IS_ERR(process))
-                return PTR_ERR(process);
-
+    if (IS_ERR(process))
+        return PTR_ERR(process);
+    
         /* filep now owns the reference returned by kfd_create_process */
         filep->private_data = process;
-
+    
         dev_dbg(compute_device, "process %d opened, compat mode (32 bit) - %d\n",
-                process->pasid, process->is_32bit_user_mode);
-
-        return 0;
+            process->pasid, process->is_32bit_user_mode);
+    
+    return 0;
 
 }
 

@@ -28,6 +28,9 @@ struct ogpu_device {
 	resource_size_t rmmio_size;
 	void __iomem *rmmio;
 
+	resource_size_t mmio_base;
+	resource_size_t mmio_size;
+
 	// protects concurrent MM_INDEX/DATA based register access
 	spinlock_t mmio_idx_lock;
 	// struct ogpu_mmio_remap rmmio_remap;
