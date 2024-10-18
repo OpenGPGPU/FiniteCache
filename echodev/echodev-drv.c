@@ -61,6 +61,7 @@ struct echodev {
 	struct dev_pagemap pgmap;
 	struct mmu_interval_notifier notifier;
 	struct dma_fence *fence;
+	struct mm_struct *mm;
 	spinlock_t lock;
 
 };
@@ -126,6 +127,9 @@ static vm_fault_t svm_migrate_to_ram(struct vm_fault *vmf)
 	migrate.dst = migrate.src + 1;
 	migrate.fault_page = vmf->page;
 
+	if(!mmget_not_zero(mm))
+		pr_err("mm get failed\n");
+
 	mmap_read_lock(mm);
 	if(migrate_vma_setup(&migrate)) {
 		pr_err("migrate vma setup failed \n");
@@ -172,6 +176,7 @@ static vm_fault_t svm_migrate_to_ram(struct vm_fault *vmf)
 	migrate_vma_pages(&migrate);
 	migrate_vma_finalize(&migrate);
 	mmap_read_unlock(mm);
+	mmput(mm);
 	printk("migrate to cpu success\n");
 	return 0;
 }
@@ -186,12 +191,14 @@ static bool svm_range_cpu_invalidate_pagetables(struct mmu_interval_notifier *mn
 						const struct mmu_notifier_range *range,
 						unsigned long cur_seq)
 {
+	printk("svm range invalidate pts \n");
+
 	struct echodev *echo = container_of(mn, struct echodev, notifier);
 
 	if (range->event == MMU_NOTIFY_MIGRATE && range->owner == echo)
 		return true;
 
-	mmu_interval_set_seq(mn, cur_seq);
+	//mmu_interval_set_seq(mn, cur_seq);
 	// invalidate gpu page ...
 	return true;
 	
@@ -282,7 +289,8 @@ static int dma_transfer2(struct echodev *echo, dma_addr_t buffer, int count, dma
 
 static void echo_page_fault(struct echodev *echo, uint64_t va)
 {
-	struct mm_struct *mm = echo->notifier.mm;
+	// struct mm_struct *mm = echo->notifier.mm;
+	struct mm_struct *mm = echo->mm;
 	struct vm_area_struct *vma;
 	struct migrate_vma migrate = {0};
 	void *buf;
@@ -292,6 +300,9 @@ static void echo_page_fault(struct echodev *echo, uint64_t va)
 	int level = 2;
 	void *pagetable;
 	uint64_t pte;
+
+	if (!mmget_not_zero(mm))
+		pr_err("gpu page fault mmget failed \n");
 
 	mmap_read_lock(mm);
 	vma = vma_lookup(mm, va);
@@ -352,6 +363,7 @@ static void echo_page_fault(struct echodev *echo, uint64_t va)
 	// printk("echodev migrate success\n");
         dma_unmap_page(&echo->pdev->dev, dma_src, PAGE_SIZE, DMA_TO_DEVICE);
 	mmap_read_unlock(mm);
+	mmput(mm);
 
 
 	// update gpu page table
@@ -471,8 +483,9 @@ static int echo_open(struct inode *inode, struct file *file)
 
 	list_for_each_entry(echo, &card_list, list) {
 		if(echo->dev_nr == dev_nr) {
-			mmu_interval_notifier_insert(&echo->notifier, current->mm,
-				0, ULONG_MAX & PAGE_MASK, &svm_range_mn_ops);
+			//mmu_interval_notifier_insert(&echo->notifier, current->mm,
+			//	0, ULONG_MAX & PAGE_MASK, &svm_range_mn_ops);
+			echo->mm = current->mm;
 			file->private_data = echo;
 			return 0;
 		}
@@ -564,7 +577,7 @@ static long int echo_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		case KERN_RING:
 			if (0 != copy_from_user(&kern_args, (void *)arg, sizeof(kern_args)))
 				return -EFAULT;
-			printk("write kern ring\n");
+			printk("write kern ring, dma addr %ld\n", dma_addr);
 			iowrite32(dma_addr & 0xffffffff, echo->ptr_bar0 + 0x48);
 			iowrite32((uint32_t)(dma_addr >> 32), echo->ptr_bar0 + 0x4c);
 			iowrite32(kern_args.size, echo->ptr_bar0 + 0x58);
@@ -590,11 +603,18 @@ static long int echo_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	}
 }
 
+static int echo_release(struct inode *inode, struct file *file) {
+	struct echodev *echo = (struct echodev *) file->private_data;
+	//mmu_interval_notifier_remove(&echo->notifier);
+	return 0;
+}
+
 static struct file_operations fops = {
 	.open = echo_open,
 	.mmap = echo_mmap,
 	.read = echo_read,
 	.write = echo_write,
+	.release = echo_release,
 	.unlocked_ioctl = echo_ioctl,
 };
 
@@ -608,12 +628,6 @@ static int echo_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int status, irq_nr;
 	struct echodev *echo;
-
-	ring_buffer = dma_alloc_coherent(&pdev->dev, 8192, &dma_addr, GFP_KERNEL);
-	if (!ring_buffer) {
-		printk("alloc ringbuffer failed!\n");
-		return -ENOMEM;
-	}
 
 	echo = devm_kzalloc(&pdev->dev, sizeof(struct echodev), GFP_KERNEL);
 	if(!echo)
@@ -675,6 +689,12 @@ static int echo_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if(status != 0) {
 		printk("echodev-drv - Error requesting interrupt\n");
 		goto fdev;
+	}
+
+	ring_buffer = dma_alloc_coherent(&pdev->dev, 8192, &dma_addr, GFP_KERNEL);
+	if (!ring_buffer) {
+		printk("alloc ringbuffer failed!\n");
+		return -ENOMEM;
 	}
 
 	return mm_init(echo);
